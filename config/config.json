@@ -1,0 +1,13 @@
+{
+  "gravity": 9.8,
+  "px_to_unit": 1.0,
+  "power_gain": 1.0,
+  "tm_threshold": 0.82,
+  "min_search_scale": 0.8,
+  "max_search_scale": 1.2,
+  "scale_steps": 5,
+  "smooth_alpha": 0.35,
+  "loop_interval": 0.25,
+  "angle_clip_low": 5.0,
+  "angle_clip_high": 85.0
+}
