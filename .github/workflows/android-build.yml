@@ -1,18 +1,15 @@
 name: Build APK (Buildozer)
 
 on:
-  workflow_dispatch:           # permite rodar manualmente
+  workflow_dispatch:
   push:
-    branches: [ main, master ] # roda ao fazer push na branch principal
+    branches: [ main, master ]
 
 jobs:
   build-apk:
     runs-on: ubuntu-latest
 
     env:
-      # >>>>>>>>>> AJUSTE AQUI SE PRECISAR <<<<<<<<<<
-      # Se o app está na raiz do repo: "."
-      # Se está em uma subpasta: "NOME-DA-PASTA"
       APP_DIR: "."
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
@@ -32,31 +29,19 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Mostrar estrutura do repositório
-        run: |
-          sudo apt-get update && sudo apt-get install -y tree || true
-          echo "Raiz do repositório:"
-          tree -L 2 || true
-          echo
-          echo "Conteúdo da pasta do app: $APP_DIR"
-          ls -la "$APP_DIR"
-
-      - name: Instalar dependências de sistema
+      - name: Deps de sistema
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential git unzip zip autoconf automake libtool pkg-config \
-            libffi-dev libssl-dev libbz2-dev libncurses5-dev libsqlite3-dev \
-            libreadline-dev liblzma-dev zlib1g-dev libgdbm-dev libnss3-dev curl
+          sudo apt-get install -y build-essential git zip unzip curl \
+            autoconf automake libtool pkg-config libffi-dev libssl-dev
 
-      - name: Instalar Buildozer + Cython
+      - name: Instalar Buildozer (+cython<3)
         run: |
           python -m pip install --upgrade pip
-          # cython <3 evita bugs em algumas recipes p4a
           pip install "cython<3.0" buildozer
 
-      # === Android SDK (cmdline-tools) + aceitar licenças + pacotes estáveis ===
-      - name: Preparar Android SDK (cmdline-tools)
+      # ---------- Android SDK estável + licenças ----------
+      - name: Baixar cmdline-tools do Android
         run: |
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdtools.zip
@@ -66,66 +51,59 @@ jobs:
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-      - name: Aceitar licenças e instalar pacotes Android (API 35 estável)
+      - name: Aceitar licenças e instalar API 35 + Build-Tools 35.0.0
         run: |
           yes | sdkmanager --licenses
           sdkmanager --update
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125"
-
-      - name: Verificar aidl e build-tools
-        run: |
-          which aidl || true
+          sdkmanager --list | head -n 50
           ls -la "$ANDROID_SDK_ROOT/build-tools/35.0.0" || true
+          which aidl || true
 
-      # (Opcional) Cache da pasta .buildozer para acelerar builds
-      - name: Cache do .buildozer
-        uses: actions/cache@v4
-        with:
-          path: |
-            .buildozer
-            ~/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('**/buildozer.spec') }}
-          restore-keys: |
-            buildozer-${{ runner.os }}-
-
-      # Ajusta seu buildozer.spec para não puxar preview/RC do SDK
-      - name: Garantir configurações estáveis no buildozer.spec
+      # ---------- Ajustes no buildozer.spec para NÃO puxar 36/preview ----------
+      - name: Fixar API/NDK e SDK path no buildozer.spec
         working-directory: ${{ env.APP_DIR }}
         run: |
           if [ ! -f buildozer.spec ]; then
-            echo "ERRO: buildozer.spec não encontrado em $PWD"
-            exit 2
+            echo "ERRO: buildozer.spec não encontrado"; exit 2
           fi
-          # requirements mínimos para exemplo; mantenha os seus se já tem:
-          if ! grep -q '^requirements' buildozer.spec; then
-            echo 'requirements = python3,kivy' >> buildozer.spec
-          fi
-          # alinhar versões de API/NDK para evitar build-tools 36.1-rc1
+          # API/NDK estáveis
           grep -q '^android.api' buildozer.spec && sed -i 's/^android\.api\s*=.*/android.api = 35/' buildozer.spec || echo 'android.api = 35' >> buildozer.spec
           grep -q '^android.minapi' buildozer.spec && sed -i 's/^android\.minapi\s*=.*/android.minapi = 23/' buildozer.spec || echo 'android.minapi = 23' >> buildozer.spec
-          # NDK 26 é recomendado para p4a recente
           grep -q '^android.ndk' buildozer.spec && sed -i 's/^android\.ndk\s*=.*/android.ndk = 26b/' buildozer.spec || echo 'android.ndk = 26b' >> buildozer.spec
-          # compilar apenas arm64 para agilizar
+          # Força o Buildozer a usar ESTE SDK (não baixar outro)
+          if grep -q '^android.sdk_path' buildozer.spec; then
+            sed -i 's#^android\.sdk_path\s*=.*#android.sdk_path = '"${{ github.workspace }}"'/android-sdk#' buildozer.spec
+          else
+            echo 'android.sdk_path = '"${{ github.workspace }}"'/android-sdk' >> buildozer.spec
+          fi
+          # Apenas arm64 para acelerar (edite se quiser v7a também)
           if grep -q '^archs' buildozer.spec; then
             sed -i 's/^archs.*/archs = arm64-v8a/' buildozer.spec
           else
             echo 'archs = arm64-v8a' >> buildozer.spec
           fi
-          echo "buildozer.spec final:"
-          grep -E '^(requirements|android\.api|android\.minapi|android\.ndk|archs)' buildozer.spec || true
+          echo "Resumo buildozer.spec:"
+          grep -E '^(android\.sdk_path|android\.api|android\.minapi|android\.ndk|archs)' buildozer.spec
+
+      # ---------- Limpa caches do Buildozer que possam carregar 36.x ----------
+      - name: Limpar caches anteriores do Buildozer
+        run: |
+          rm -rf ~/.buildozer
+          rm -rf .buildozer
 
       - name: Build (APK debug)
         working-directory: ${{ env.APP_DIR }}
         env:
+          ANDROIDSDK: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROIDNDK: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
           CI: "1"
         run: |
-          buildozer android clean || true
           buildozer -v android debug
 
-      - name: Publicar APK como artefato
-        if: always()
+      - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
-          name: ddtankbot-apk
+          name: app-apk
           path: ${{ env.APP_DIR }}/bin/*.apk
           if-no-files-found: warn
