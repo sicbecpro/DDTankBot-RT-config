@@ -1,0 +1,53 @@
+name: Build APK (Buildozer)
+
+on:
+  workflow_dispatch:   # permite rodar manualmente
+  push:
+    branches: [ main, master ]   # roda quando fizer push na branch principal
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências do sistema
+        run: |
+          sudo apt update
+          sudo apt install -y python3-pip python3-venv \
+              build-essential git unzip zip autoconf automake libtool pkg-config \
+              openjdk-17-jdk
+
+      - name: Instalar pipx + buildozer
+        run: |
+          sudo apt install -y pipx
+          pipx ensurepath
+          pipx install buildozer
+          pipx runpip buildozer install --upgrade cython packaging appdirs colorama jinja2 build toml sh setuptools wheel
+
+      - name: Corrigir problemas de compatibilidade do buildozer
+        run: |
+          P4A_ANDROID_PY=$(find ~/.local/share/pipx/venvs/buildozer -path "*site-packages/buildozer/targets/android.py" | head -n1)
+          sed -i 's/from distutils.version import LooseVersion/from packaging.version import Version as LooseVersion/' "$P4A_ANDROID_PY"
+          sed -i 's/options = \["--user"\]/options = []/' "$P4A_ANDROID_PY"
+
+      - name: Garantir configurações mínimas no buildozer.spec
+        run: |
+          sed -i 's/^requirements\s*=.*/requirements = python3,kivy,numpy/' buildozer.spec || echo 'requirements = python3,kivy,numpy' >> buildozer.spec
+          sed -i 's/^android\.api\s*=.*/android.api = 33/' buildozer.spec || echo 'android.api = 33' >> buildozer.spec
+          sed -i 's/^android\.minapi\s*=.*/android.minapi = 21/' buildozer.spec || echo 'android.minapi = 21' >> buildozer.spec
+          sed -i 's/^android\.ndk\s*=.*/android.ndk = 25b/' buildozer.spec || echo 'android.ndk = 25b' >> buildozer.spec
+          grep -q '^archs' buildozer.spec && sed -i 's/^archs.*/archs = arm64-v8a/' buildozer.spec || echo 'archs = arm64-v8a' >> buildozer.spec
+
+      - name: Compilar APK
+        run: |
+          buildozer android clean || true
+          buildozer -v android debug
+
+      - name: Salvar APK como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddtankbot-apk
+          path: bin/*.apk
