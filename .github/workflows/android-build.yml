@@ -1,53 +1,89 @@
 name: Build APK (Buildozer)
 
 on:
-  workflow_dispatch:   # permite rodar manualmente
+  workflow_dispatch:           # permite rodar manualmente
   push:
-    branches: [ main, master ]   # roda quando fizer push na branch principal
+    branches: [ main, master ] # roda ao fazer push na branch principal
 
 jobs:
   build-apk:
     runs-on: ubuntu-22.04
 
+    env:
+      # >>>>>>>>>> AJUSTE AQUI SE PRECISAR <<<<<<<<<<
+      # Se o app está na raiz do repo: "."
+      # Se está em uma subpasta: "NOME-DA-PASTA"
+      APP_DIR: "."
+
     steps:
-      - name: Baixar código do repositório
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalar dependências do sistema
+      - name: Mostrar estrutura do repositório
         run: |
-          sudo apt update
-          sudo apt install -y python3-pip python3-venv \
-              build-essential git unzip zip autoconf automake libtool pkg-config \
-              openjdk-17-jdk
+          sudo apt-get update && sudo apt-get install -y tree || true
+          echo "Raiz do repositório:"
+          tree -L 2 || true
+          echo
+          echo "Conteúdo da pasta do app: $APP_DIR"
+          ls -la "$APP_DIR"
 
-      - name: Instalar pipx + buildozer
+      - name: Instalar dependências de sistema
         run: |
-          sudo apt install -y pipx
-          pipx ensurepath
-          pipx install buildozer
-          pipx runpip buildozer install --upgrade cython packaging appdirs colorama jinja2 build toml sh setuptools wheel
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git unzip zip autoconf automake libtool pkg-config \
+            openjdk-17-jdk
 
-      - name: Corrigir problemas de compatibilidade do buildozer
+      - name: Instalar buildozer e dependências (via pip)
         run: |
-          P4A_ANDROID_PY=$(find ~/.local/share/pipx/venvs/buildozer -path "*site-packages/buildozer/targets/android.py" | head -n1)
+          python3 -m pip install --upgrade pip
+          python3 -m pip install \
+            cython packaging appdirs colorama jinja2 build toml sh \
+            setuptools wheel buildozer
+
+      - name: Patches de compatibilidade do buildozer (distutils/--user)
+        run: |
+          set -e
+          P4A_ANDROID_PY=$(python3 -c "import buildozer, pathlib; print(next(pathlib.Path(buildozer.__file__).parent.glob('targets/android.py')))") || exit 1
+          echo "Arquivo do target android encontrado em: $P4A_ANDROID_PY"
+          # corrige import de distutils
           sed -i 's/from distutils.version import LooseVersion/from packaging.version import Version as LooseVersion/' "$P4A_ANDROID_PY"
+          # remove --user em chamadas internas de pip
           sed -i 's/options = \["--user"\]/options = []/' "$P4A_ANDROID_PY"
 
-      - name: Garantir configurações mínimas no buildozer.spec
+      - name: Garantir buildozer.spec mínimo estável
+        working-directory: ${{ env.APP_DIR }}
         run: |
+          if [ ! -f buildozer.spec ]; then
+            echo "ERRO: buildozer.spec não encontrado em $PWD"
+            exit 2
+          fi
+          # requirements mínimos para compilar primeiro
           sed -i 's/^requirements\s*=.*/requirements = python3,kivy,numpy/' buildozer.spec || echo 'requirements = python3,kivy,numpy' >> buildozer.spec
+          # alinhar versões de API/NDK
           sed -i 's/^android\.api\s*=.*/android.api = 33/' buildozer.spec || echo 'android.api = 33' >> buildozer.spec
           sed -i 's/^android\.minapi\s*=.*/android.minapi = 21/' buildozer.spec || echo 'android.minapi = 21' >> buildozer.spec
           sed -i 's/^android\.ndk\s*=.*/android.ndk = 25b/' buildozer.spec || echo 'android.ndk = 25b' >> buildozer.spec
-          grep -q '^archs' buildozer.spec && sed -i 's/^archs.*/archs = arm64-v8a/' buildozer.spec || echo 'archs = arm64-v8a' >> buildozer.spec
+          # compilar apenas arm64 para acelerar
+          if grep -q '^archs' buildozer.spec; then
+            sed -i 's/^archs.*/archs = arm64-v8a/' buildozer.spec
+          else
+            echo 'archs = arm64-v8a' >> buildozer.spec
+          fi
+          echo "buildozer.spec final:"
+          grep -E '^(requirements|android\.api|android\.minapi|android\.ndk|archs)' buildozer.spec || true
 
-      - name: Compilar APK
+      - name: Build (APK debug)
+        working-directory: ${{ env.APP_DIR }}
         run: |
           buildozer android clean || true
           buildozer -v android debug
 
-      - name: Salvar APK como artefato
+      - name: Publicar APK como artefato
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ddtankbot-apk
-          path: bin/*.apk
+          path: ${{ env.APP_DIR }}/bin/*.apk
+          if-no-files-found: warn
